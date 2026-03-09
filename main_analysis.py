@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
 Employee Sentiment Analysis - Main Analysis Script
-Consolidated implementation combining core analysis, advanced ML, and visualizations
+Analyzes employee messages from test.xlsx dataset
+
+Tasks:
+1. Sentiment Labeling - Label messages as Positive/Negative/Neutral
+2. Exploratory Data Analysis (EDA)
+3. Employee Score Calculation
+4. Employee Ranking
+5. Flight Risk Identification
+6. Predictive Modeling (Linear Regression)
 """
 
 # =============================
@@ -16,8 +24,7 @@ import numpy as np
 import re
 import os
 import json
-import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import Counter
 
 # NLTK & Text Processing
@@ -28,38 +35,21 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer
 # Visualization
 import matplotlib.pyplot as plt
 import seaborn as sns
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from wordcloud import WordCloud
 
 # ML & Stats
-from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import mean_squared_error, r2_score, classification_report, accuracy_score
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.preprocessing import StandardScaler
-from scipy import stats
-
-# Advanced ML (optional)
-try:
-    from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-    from bertopic import BERTopic
-    from sklearn.ensemble import IsolationForest
-    ADVANCED_COMPONENTS_AVAILABLE = True
-except ImportError:
-    print("Warning: Advanced ML components not available. Install transformers, bertopic, and scikit-learn for full functionality.")
-    ADVANCED_COMPONENTS_AVAILABLE = False
 
 # Download required NLTK data
 nltk.download('vader_lexicon', quiet=True)
 nltk.download('punkt', quiet=True)
 nltk.download('words', quiet=True)
 
-# Initialize components
+# Initialize VADER sentiment analyzer
 sia = SentimentIntensityAnalyzer()
-english_vocab = set(words.words())
 
 # Set plotting style
 plt.style.use('seaborn-v0_8')
@@ -69,8 +59,10 @@ sns.set_palette("husl")
 if not os.path.exists('visualizations'):
     os.makedirs('visualizations')
 
-print("Libraries imported successfully!")
-print(f"Advanced components available: {ADVANCED_COMPONENTS_AVAILABLE}")
+print("=" * 60)
+print("EMPLOYEE SENTIMENT ANALYSIS")
+print("=" * 60)
+print("\nLibraries imported successfully!")
 
 # =============================
 # UTILITY FUNCTIONS
@@ -78,580 +70,633 @@ print(f"Advanced components available: {ADVANCED_COMPONENTS_AVAILABLE}")
 
 def remove_special_char(text):
     """Remove special characters from text"""
-    if pd.isnull(text): return text
-    return re.sub(r"[^A-Za-z0-9\s.,!?\'\"-]", '', text)
-
-def is_english(text, threshold=0.5):
-    """Check if text is primarily English"""
-    if pd.isnull(text): return False
-    tokens = re.findall(r'\b\w+\b', text.lower())
-    if not tokens: return False
-    eng = sum(1 for t in tokens if t in english_vocab)
-    return (eng / len(tokens)) >= threshold
+    if pd.isnull(text): return ""
+    text = str(text)
+    return re.sub(r"[^A-Za-z0-9\s.,!?\'\"-]", ' ', text)
 
 def sentiment_label(text):
-    """Basic VADER sentiment analysis"""
-    if pd.isnull(text): return 'Neutral'
-    score = sia.polarity_scores(text)['compound']
-    if score >= 0.05:
-        return 'Positive'
-    elif score <= -0.05:
-        return 'Negative'
-    else:
+    """
+    Task 1: Sentiment Labeling
+    Uses VADER sentiment analyzer to classify messages
+    Returns: 'Positive', 'Negative', or 'Neutral'
+    """
+    if pd.isnull(text) or str(text).strip() == "":
         return 'Neutral'
-
-def create_employee_id(df):
-    """Create synthetic employee IDs"""
-    df['employee_id'] = df['job-title'].fillna('Unknown') + '_' + df['curr/ex-flg']
-    df['employee_id'] = df['employee_id'].str.replace(' ', '_')
-    return df
-
-# =============================
-# ADVANCED SENTIMENT ANALYSIS
-# =============================
-
-def advanced_sentiment_analysis(text, threshold_pos=0.6, threshold_neg=0.4):
-    """Advanced sentiment analysis using RoBERTa"""
-    if pd.isnull(text) or not isinstance(text, str) or text.strip() == '':
-        return 'Neutral'
-
     try:
-        # Load model if not already loaded (global variable to avoid reloading)
-        global roberta_pipeline
-        if 'roberta_pipeline' not in globals():
-            model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            model = AutoModelForSequenceClassification.from_pretrained(model_name)
-            roberta_pipeline = pipeline(
-                "sentiment-analysis",
-                model=model,
-                tokenizer=tokenizer,
-                device=0 if hasattr(__import__('torch'), 'cuda') and __import__('torch').cuda.is_available() else -1,
-                return_all_scores=True
-            )
-
-        # Get sentiment scores
-        results = roberta_pipeline(text[:512])
-        scores = {result['label']: result['score'] for result in results[0]}
-
-        # Map to our labels
-        pos_score = scores.get('LABEL_2', 0)  # Positive
-        neg_score = scores.get('LABEL_0', 0)  # Negative
-
-        # Classification with thresholds
-        if pos_score >= threshold_pos:
+        score = sia.polarity_scores(str(text))['compound']
+        if score >= 0.05:
             return 'Positive'
-        elif neg_score >= threshold_neg:
+        elif score <= -0.05:
             return 'Negative'
         else:
             return 'Neutral'
-
-    except Exception as e:
-        print(f"Error in advanced sentiment: {e}")
+    except:
         return 'Neutral'
 
 # =============================
-# TOPIC MODELING
+# DATA LOADING & PREPROCESSING
 # =============================
 
-def perform_topic_modeling(df, sentiment_type='all', max_samples=1000):
-    """Perform BERTopic analysis"""
-    if not ADVANCED_COMPONENTS_AVAILABLE:
-        print("BERTopic not available, skipping topic modeling")
-        return None
-
-    try:
-        # Filter data
-        if sentiment_type == 'all':
-            texts = df['pros&cons'].dropna().tolist()
-        else:
-            texts = df[df['sentiment'] == sentiment_type]['pros&cons'].dropna().tolist()
-
-        texts = texts[:max_samples]
-
-        # Create and fit topic model
-        topic_model = BERTopic(language="english", calculate_probabilities=True, verbose=False)
-        topics, probabilities = topic_model.fit_transform(texts)
-
-        return {
-            'model': topic_model,
-            'topics': topics,
-            'probabilities': probabilities,
-            'topic_info': topic_model.get_topic_info(),
-            'texts': texts
-        }
-
-    except Exception as e:
-        print(f"Topic modeling failed: {e}")
-        return None
-
-# =============================
-# CHURN PREDICTION
-# =============================
-
-def create_churn_labels(df, sentiment_column='sentiment', time_window=30):
-    """Create churn labels based on sentiment patterns"""
-    # Group by employee and get recent sentiment history
-    employee_sentiment = df.groupby('employee_id')[sentiment_column].agg(list).reset_index()
-
-    def calculate_churn_risk(sentiments):
-        if not sentiments:
-            return 0
-        # Take last time_window days of sentiment
-        recent_sentiments = sentiments[-time_window:] if len(sentiments) >= time_window else sentiments
-        negative_ratio = sum(1 for s in recent_sentiments if s == 'Negative') / len(recent_sentiments)
-        return 1 if negative_ratio > 0.6 else 0  # High churn risk if >60% negative
-
-    employee_sentiment['churn_risk'] = employee_sentiment[sentiment_column].apply(calculate_churn_risk)
-    return employee_sentiment[['employee_id', 'churn_risk']]
-
-def engineer_features(df):
-    """Create features for churn prediction model"""
-    features = []
-
-    for employee_id in df['employee_id'].unique():
-        employee_data = df[df['employee_id'] == employee_id].copy()
-
-        if len(employee_data) < 3:  # Minimum reviews
-            continue
-
-        # Basic sentiment features
-        sentiment_counts = employee_data['sentiment'].value_counts()
-        total_reviews = len(employee_data)
-
-        # Sentiment ratios
-        pos_ratio = sentiment_counts.get('Positive', 0) / total_reviews
-        neg_ratio = sentiment_counts.get('Negative', 0) / total_reviews
-        neu_ratio = sentiment_counts.get('Neutral', 0) / total_reviews
-
-        # Sentiment trends
-        mid_point = len(employee_data) // 2
-        recent_sentiment = employee_data['sentiment'].iloc[mid_point:].value_counts()
-        older_sentiment = employee_data['sentiment'].iloc[:mid_point].value_counts()
-
-        recent_neg_ratio = recent_sentiment.get('Negative', 0) / max(1, recent_sentiment.sum())
-        older_neg_ratio = older_sentiment.get('Negative', 0) / max(1, older_sentiment.sum())
-        sentiment_trend = recent_neg_ratio - older_neg_ratio
-
-        # Frequency features
-        review_frequency = total_reviews / max(1, (employee_data['dates'].max() - employee_data['dates'].min()).days)
-
-        # Text length features
-        avg_message_length = employee_data['message_length'].mean()
-        avg_word_count = employee_data['word_count'].mean()
-
-        # Rating features
-        avg_rating = employee_data['overall-ratings'].mean()
-        rating_volatility = employee_data['overall-ratings'].std()
-
-        # Time-based features
-        first_review = employee_data['dates'].min()
-        last_review = employee_data['dates'].max()
-        tenure_days = (last_review - first_review).days
-
-        feature_dict = {
-            'employee_id': employee_id,
-            'total_reviews': total_reviews,
-            'positive_ratio': pos_ratio,
-            'negative_ratio': neg_ratio,
-            'neutral_ratio': neu_ratio,
-            'sentiment_trend': sentiment_trend,
-            'review_frequency': review_frequency,
-            'avg_message_length': avg_message_length,
-            'avg_word_count': avg_word_count,
-            'avg_rating': avg_rating,
-            'rating_volatility': rating_volatility,
-            'tenure_days': tenure_days
-        }
-
-        features.append(feature_dict)
-
-    return pd.DataFrame(features)
-
-def train_churn_model(features_df, churn_labels, test_size=0.2, random_state=42):
-    """Train and evaluate churn prediction model"""
-    # Merge features with churn labels
-    model_data = features_df.merge(churn_labels, on='employee_id', how='left')
-    model_data = model_data.fillna(0)
-
-    # Prepare features and target
-    feature_cols = [col for col in model_data.columns if col not in ['employee_id', 'churn_risk']]
-    X = model_data[feature_cols]
-    y = model_data['churn_risk']
-
-    # Handle class imbalance
-    if y.sum() < len(y) * 0.1:
-        print("Warning: Low churn rate detected.")
-
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y
-    )
-
-    # Scale features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-
-    # Train Random Forest
-    rf_model = RandomForestClassifier(n_estimators=100, random_state=random_state, class_weight='balanced')
-    rf_model.fit(X_train_scaled, y_train)
-
-    # Predictions
-    y_pred = rf_model.predict(X_test_scaled)
-    y_pred_proba = rf_model.predict_proba(X_test_scaled)[:, 1]
-
-    # Evaluation
-    report = classification_report(y_test, y_pred, output_dict=True)
-    auc_score = roc_auc_score(y_test, y_pred_proba)
-
-    return {
-        'model': rf_model,
-        'scaler': scaler,
-        'selected_features': feature_cols,
-        'predictions': y_pred,
-        'probabilities': y_pred_proba,
-        'classification_report': report,
-        'auc_score': auc_score,
-        'X_test': X_test,
-        'y_test': y_test
-    }
+def load_and_preprocess_data(file_path='test.xlsx'):
+    """Load data from test.xlsx and preprocess for analysis"""
+    print("\n" + "=" * 60)
+    print("TASK 1: DATA LOADING & PREPROCESSING")
+    print("=" * 60)
+    
+    df = pd.read_excel(file_path)
+    print(f"\nDataset loaded with {df.shape[0]} rows and {df.shape[1]} columns")
+    print(f"Columns: {df.columns.tolist()}")
+    
+    print(f"\n--- Initial Data Structure ---")
+    print(f"Total records: {len(df)}")
+    print(f"\nMissing values per column:")
+    print(df.isnull().sum())
+    
+    # Combine Subject and body for full text analysis
+    df['Subject'] = df['Subject'].fillna('').astype(str)
+    df['body'] = df['body'].fillna('').astype(str)
+    df['full_text'] = df['Subject'] + ' ' + df['body']
+    
+    # Clean text
+    df['clean_text'] = df['full_text'].apply(remove_special_char)
+    
+    # Parse dates - handle various formats
+    df['parsed_date'] = pd.to_datetime(df['date'], errors='coerce')
+    
+    # Extract year-month for monthly aggregation
+    df['month'] = df['parsed_date'].dt.to_period('M').astype(str)
+    
+    # Employee identifier from 'from' column
+    df['employee_id'] = df['from'].fillna('unknown@enron.com')
+    
+    # Filter valid records
+    df_valid = df[(df['clean_text'].str.len() > 10) & (df['parsed_date'].notna())].copy()
+    
+    print(f"\nAfter filtering valid records: {len(df_valid)} rows")
+    
+    valid_dates = df_valid['parsed_date'].dropna()
+    if len(valid_dates) > 0:
+        print(f"\n  Date range: {valid_dates.min().strftime('%Y-%m-%d')} to {valid_dates.max().strftime('%Y-%m-%d')}")
+    
+    return df_valid
 
 # =============================
-# ANOMALY DETECTION
+# TASK 1: SENTIMENT LABELING
 # =============================
 
-def detect_sentiment_anomalies(df, sentiment_column='sentiment', date_column='dates', window_size=30):
-    """Detect sentiment anomalies using statistical methods"""
-    df = df.copy()
-    df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
-    df = df.dropna(subset=[date_column])
-    df = df.sort_values(date_column)
-
-    # Create daily sentiment counts
-    daily_sentiment = df.groupby(df[date_column].dt.date)[sentiment_column].value_counts().unstack(fill_value=0)
-    daily_sentiment['total_reviews'] = daily_sentiment.sum(axis=1)
-    daily_sentiment['negative_ratio'] = daily_sentiment.get('Negative', 0) / daily_sentiment['total_reviews']
-
-    # Rolling statistics
-    daily_sentiment['neg_ratio_ma'] = daily_sentiment['negative_ratio'].rolling(window=window_size, center=True).mean()
-    daily_sentiment['neg_ratio_std'] = daily_sentiment['negative_ratio'].rolling(window=window_size, center=True).std()
-    daily_sentiment['neg_ratio_zscore'] = (daily_sentiment['negative_ratio'] - daily_sentiment['neg_ratio_ma']) / daily_sentiment['neg_ratio_std']
-    daily_sentiment['is_anomaly'] = abs(daily_sentiment['neg_ratio_zscore']) > 3
-
-    return daily_sentiment
-
-def ml_anomaly_detection(df, features=['negative_ratio', 'total_reviews'], contamination=0.1):
-    """ML-based anomaly detection"""
-    from sklearn.ensemble import IsolationForest
-    from sklearn.preprocessing import StandardScaler
-
-    feature_data = df[features].copy()
-    feature_data = feature_data.fillna(feature_data.mean())
-
-    scaler = StandardScaler()
-    scaled_features = scaler.fit_transform(feature_data)
-
-    iso_forest = IsolationForest(contamination=contamination, random_state=42)
-    anomaly_scores = iso_forest.fit_predict(scaled_features)
-
-    df = df.copy()
-    df['ml_anomaly_score'] = iso_forest.decision_function(scaled_features)
-    df['is_ml_anomaly'] = anomaly_scores == -1
-
-    return df, iso_forest, scaler
+def perform_sentiment_labeling(df):
+    """Task 1: Sentiment Labeling"""
+    print("\n" + "=" * 60)
+    print("TASK 1: SENTIMENT LABELING")
+    print("=" * 60)
+    
+    print("\nUsing VADER Sentiment Analysis for labeling...")
+    print("  - Positive: compound score >= 0.05")
+    print("  - Negative: compound score <= -0.05")
+    print("  - Neutral: compound score between -0.05 and 0.05")
+    
+    df['sentiment'] = df['clean_text'].apply(sentiment_label)
+    sentiment_dist = df['sentiment'].value_counts()
+    
+    print(f"\nSentiment labeling complete!")
+    print(f"\n--- Sentiment Distribution ---")
+    for sent, count in sentiment_dist.items():
+        pct = (count / len(df)) * 100
+        print(f"  {sent}: {count} ({pct:.1f}%)")
+    
+    # Add sentiment scores for Task 3
+    sentiment_scores = {'Positive': 1, 'Negative': -1, 'Neutral': 0}
+    df['sentiment_score'] = df['sentiment'].map(sentiment_scores)
+    
+    return df
 
 # =============================
-# VISUALIZATION FUNCTIONS
+# TASK 2: EXPLORATORY DATA ANALYSIS
 # =============================
 
-def create_sentiment_distribution_pie(df):
-    """Create sentiment distribution pie chart"""
+def perform_eda(df):
+    """Task 2: EDA"""
+    print("\n" + "=" * 60)
+    print("TASK 2: EXPLORATORY DATA ANALYSIS (EDA)")
+    print("=" * 60)
+    
+    print("\n--- 2.1 Data Structure Analysis ---")
+    print(f"  Total messages: {len(df)}")
+    print(f"  Unique employees: {df['employee_id'].nunique()}")
+    print(f"  Date range: {df['month'].min()} to {df['month'].max()}")
+    print(f"  Unique months: {df['month'].nunique()}")
+    
+    print("\n--- 2.2 Sentiment Distribution ---")
+    
+    # Pie chart
+    fig, ax = plt.subplots(figsize=(10, 8))
     sentiment_dist = df['sentiment'].value_counts()
     colors = ['#4CAF50', '#F44336', '#FFC107']
-
-    plt.figure(figsize=(10, 8))
-    plt.pie(sentiment_dist.values, labels=sentiment_dist.index, colors=colors,
-            autopct='%1.1f%%', startangle=90, shadow=True, explode=(0.05, 0, 0))
-    plt.title('Employee Sentiment Distribution', fontsize=16, fontweight='bold')
-    plt.axis('equal')
+    explode = (0.05, 0.05, 0.05)
+    
+    ax.pie(sentiment_dist.values, labels=sentiment_dist.index, colors=colors,
+           autopct='%1.1f%%', startangle=90, explode=explode, shadow=True)
+    ax.set_title('Employee Sentiment Distribution', fontsize=16, fontweight='bold')
+    plt.tight_layout()
     plt.savefig('visualizations/sentiment_distribution_pie.png', dpi=300, bbox_inches='tight')
     plt.show()
     plt.close()
-
-def create_sentiment_trends(df):
-    """Create sentiment trends over time"""
-    monthly_sentiment = df.groupby(['dates', 'sentiment']).size().unstack(fill_value=0)
-    monthly_sentiment = monthly_sentiment.div(monthly_sentiment.sum(axis=1), axis=0)
-
-    plt.figure(figsize=(15, 8))
-    for sentiment in monthly_sentiment.columns:
-        plt.plot(monthly_sentiment.index, monthly_sentiment[sentiment], marker='o', linewidth=2, label=sentiment)
-
-    plt.title('Sentiment Trends Over Time', fontsize=16, fontweight='bold')
-    plt.xlabel('Month', fontsize=12)
-    plt.ylabel('Proportion', fontsize=12)
-    plt.legend(fontsize=12)
-    plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3)
+    print("  Saved: visualizations/sentiment_distribution_pie.png")
+    
+    # Bar chart
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(sentiment_dist.index, sentiment_dist.values, color=colors, edgecolor='black')
+    ax.set_xlabel('Sentiment', fontsize=12)
+    ax.set_ylabel('Number of Messages', fontsize=12)
+    ax.set_title('Sentiment Distribution by Count', fontsize=14, fontweight='bold')
+    
+    for bar, val in zip(bars, sentiment_dist.values):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 10, 
+                str(val), ha='center', va='bottom', fontsize=11)
+    
     plt.tight_layout()
-    plt.savefig('visualizations/sentiment_trends_over_time.png', dpi=300, bbox_inches='tight')
+    plt.savefig('visualizations/sentiment_distribution_bar.png', dpi=300, bbox_inches='tight')
     plt.show()
     plt.close()
-
-def create_employee_rankings_table(monthly_scores):
-    """Create employee rankings visualization"""
-    recent_months = sorted(monthly_scores['month'].unique())[-6:]
-    top_positive = []
-    top_negative = []
-
-    for month in recent_months:
-        month_data = monthly_scores[monthly_scores['month'] == month]
-        top_pos = month_data.nlargest(3, 'monthly_score')[['employee_id', 'monthly_score']]
-        top_neg = month_data.nsmallest(3, 'monthly_score')[['employee_id', 'monthly_score']]
-        top_positive.append(top_pos.assign(month=month))
-        top_negative.append(top_neg.assign(month=month))
-
-    top_positive_df = pd.concat(top_positive)
-    top_negative_df = pd.concat(top_negative)
-
-    # Create table
-    fig, ax = plt.subplots(figsize=(12, 8))
-    ax.axis('off')
-
-    table_data = []
-    for month in recent_months:
-        pos_data = top_positive_df[top_positive_df['month'] == month]
-        neg_data = top_negative_df[top_negative_df['month'] == month]
-
-        table_data.append([month, 'Top Positive', pos_data.iloc[0]['employee_id'] if len(pos_data) > 0 else 'N/A',
-                          pos_data.iloc[0]['monthly_score'] if len(pos_data) > 0 else 0])
-        if len(pos_data) > 1:
-            table_data.append(['', '', pos_data.iloc[1]['employee_id'], pos_data.iloc[1]['monthly_score']])
-        if len(pos_data) > 2:
-            table_data.append(['', '', pos_data.iloc[2]['employee_id'], pos_data.iloc[2]['monthly_score']])
-
-        table_data.append(['', 'Top Negative', neg_data.iloc[0]['employee_id'] if len(neg_data) > 0 else 'N/A',
-                          neg_data.iloc[0]['monthly_score'] if len(neg_data) > 0 else 0])
-        if len(neg_data) > 1:
-            table_data.append(['', '', neg_data.iloc[1]['employee_id'], neg_data.iloc[1]['monthly_score']])
-        if len(neg_data) > 2:
-            table_data.append(['', '', neg_data.iloc[2]['employee_id'], neg_data.iloc[2]['monthly_score']])
-
-    table = ax.table(cellText=table_data, colLabels=['Month', 'Category', 'Employee ID', 'Score'],
-                    cellLoc='center', loc='center', colWidths=[0.2, 0.3, 0.4, 0.1])
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1.2, 1.2)
-    plt.title('Employee Rankings by Month', fontsize=16, fontweight='bold', pad=20)
-    plt.savefig('visualizations/employee_rankings_table.png', dpi=300, bbox_inches='tight')
+    print("  Saved: visualizations/sentiment_distribution_bar.png")
+    
+    print("\n--- 2.3 Time-based Trends ---")
+    
+    monthly_sentiment = df.groupby(['month', 'sentiment']).size().unstack(fill_value=0)
+    monthly_total = monthly_sentiment.sum(axis=1)
+    monthly_pct = monthly_sentiment.div(monthly_total, axis=0) * 100
+    
+    fig, ax = plt.subplots(figsize=(14, 6))
+    colors_line = {'Positive': '#4CAF50', 'Negative': '#F44336', 'Neutral': '#FFC107'}
+    
+    for sentiment in ['Positive', 'Negative', 'Neutral']:
+        if sentiment in monthly_pct.columns:
+            ax.plot(monthly_pct.index, monthly_pct[sentiment], 
+                   marker='o', linewidth=2, label=sentiment, color=colors_line[sentiment])
+    
+    ax.set_xlabel('Month', fontsize=12)
+    ax.set_ylabel('Percentage (%)', fontsize=12)
+    ax.set_title('Sentiment Trends Over Time', fontsize=14, fontweight='bold')
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig('visualizations/sentiment_trends_over_time.png', dpi=300, bbox_inches='tight')
     plt.close()
-
-def create_word_clouds(df):
-    """Create sentiment word clouds"""
+    print("  Saved: visualizations/sentiment_trends_over_time.png")
+    
+    print("\n--- 2.4 Word Clouds by Sentiment ---")
+    
     def create_sentiment_wordcloud(sentiment_type, color_map):
-        text = ' '.join(df[df['sentiment'] == sentiment_type]['pros&cons'].dropna())
-        if text.strip():
+        text = ' '.join(df[df['sentiment'] == sentiment_type]['clean_text'].dropna())
+        if len(text.strip()) > 0:
             wordcloud = WordCloud(width=800, height=400, background_color='white',
                                 colormap=color_map, max_words=100,
-                                contour_width=1, contour_color='steelblue').generate(text)
-
+                                min_font_size=10).generate(text)
+            
             plt.figure(figsize=(16, 8))
             plt.imshow(wordcloud, interpolation='bilinear')
             plt.axis('off')
-            plt.title(f'{sentiment_type} Sentiment Word Cloud', fontsize=20, fontweight='bold', pad=20)
+            plt.title(f'{sentiment_type} Sentiment Word Cloud', fontsize=16, fontweight='bold')
             plt.savefig(f'visualizations/{sentiment_type.lower()}_wordcloud.png', dpi=300, bbox_inches='tight')
-            plt.show()
             plt.close()
-
+            return True
+        return False
+    
     create_sentiment_wordcloud('Positive', 'Greens')
     create_sentiment_wordcloud('Negative', 'Reds')
     create_sentiment_wordcloud('Neutral', 'Blues')
+    print("  Saved: word clouds for each sentiment type")
+    
+    print("\n--- 2.5 Additional Patterns ---")
+    
+    df['message_length'] = df['clean_text'].str.len()
+    df['word_count'] = df['clean_text'].str.split().str.len()
+    
+    print(f"  Average message length: {df['message_length'].mean():.1f} characters")
+    print(f"  Average word count: {df['word_count'].mean():.1f} words")
+    
+    msg_per_employee = df['employee_id'].value_counts()
+    print(f"  Messages per employee: min={msg_per_employee.min()}, max={msg_per_employee.max()}, median={msg_per_employee.median():.0f}")
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    axes[0].hist(df['message_length'], bins=50, color='steelblue', edgecolor='black', alpha=0.7)
+    axes[0].set_xlabel('Message Length (characters)')
+    axes[0].set_ylabel('Frequency')
+    axes[0].set_title('Message Length Distribution')
+    axes[0].axvline(df['message_length'].mean(), color='red', linestyle='--', label=f'Mean: {df["message_length"].mean():.0f}')
+    axes[0].legend()
+    
+    top_employees = msg_per_employee.head(20)
+    axes[1].barh(range(len(top_employees)), top_employees.values, color='teal')
+    axes[1].set_yticks(range(len(top_employees)))
+    axes[1].set_yticklabels([e.split('@')[0][:15] for e in top_employees.index], fontsize=8)
+    axes[1].set_xlabel('Number of Messages')
+    axes[1].set_title('Top 20 Employees by Message Count')
+    
+    plt.tight_layout()
+    plt.savefig('visualizations/data_patterns.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print("  Saved: visualizations/data_patterns.png")
+    
+    print("\nEDA complete!")
+    return df
 
 # =============================
-# MAIN ANALYSIS PIPELINE
+# TASK 3: EMPLOYEE SCORE CALCULATION
+# =============================
+
+def calculate_employee_scores(df):
+    """Task 3: Employee Score Calculation"""
+    print("\n" + "=" * 60)
+    print("TASK 3: EMPLOYEE SCORE CALCULATION")
+    print("=" * 60)
+    
+    print("\nScoring Method:")
+    print("  - Positive Message: +1 point")
+    print("  - Negative Message: -1 point")
+    print("  - Neutral Message: 0 points (no effect)")
+    print("  - Monthly aggregation: Sum of scores per employee per month")
+    
+    monthly_scores = df.groupby(['employee_id', 'month'])['sentiment_score'].sum().reset_index()
+    monthly_scores.columns = ['employee_id', 'month', 'monthly_score']
+    monthly_scores = monthly_scores.sort_values(['month', 'monthly_score'], ascending=[True, False])
+    
+# =============================
+# TASK 3: EMPLOYEE SCORE CALCULATION
+# =============================
+
+def calculate_employee_scores(df):
+    """Task 3: Employee Score Calculation"""
+    print("\n" + "=" * 60)
+    print("TASK 3: EMPLOYEE SCORE CALCULATION")
+    print("=" * 60)
+    
+    print("\nScoring Method:")
+    print("  - Positive Message: +1 point")
+    print("  - Negative Message: -1 point")
+    print("  - Neutral Message: 0 points (no effect)")
+    print("  - Monthly aggregation: Sum of scores per employee per month")
+    
+    monthly_scores = df.groupby(['employee_id', 'month'])['sentiment_score'].sum().reset_index()
+    monthly_scores.columns = ['employee_id', 'month', 'monthly_score']
+    monthly_scores = monthly_scores.sort_values(['month', 'monthly_score'], ascending=[True, False])
+    
+    print(f"\n✓ Monthly scores calculated")
+    print(f"  Total employee-month combinations: {len(monthly_scores)}")
+    print(f"  Unique employees scored: {monthly_scores['employee_id'].nunique()}")
+    
+    print(f"\n--- Sample Monthly Scores ---")
+    print(monthly_scores.head(10).to_string(index=False))
+    
+    print(f"\n--- Score Statistics ---")
+    print(f"  Highest score: {monthly_scores['monthly_score'].max()}")
+    print(f"  Lowest score: {monthly_scores['monthly_score'].min()}")
+    print(f"  Average score: {monthly_scores['monthly_score'].mean():.2f}")
+    
+    return monthly_scores
+
+# =============================
+# TASK 4: EMPLOYEE RANKING
+# =============================
+
+def rank_employees(monthly_scores):
+    """Task 4: Employee Ranking"""
+    print("\n" + "=" * 60)
+    print("TASK 4: EMPLOYEE RANKING")
+    print("=" * 60)
+    
+    months = sorted(monthly_scores['month'].unique())
+    rankings = []
+    
+    print("\n--- Employee Rankings by Month ---")
+    
+    for month in months:
+        month_data = monthly_scores[monthly_scores['month'] == month].copy()
+        month_data_sorted = month_data.sort_values(
+            by=['monthly_score', 'employee_id'], 
+            ascending=[False, True]
+        )
+        
+        top_positive = month_data_sorted.head(3)
+        top_negative = month_data_sorted.tail(3).sort_values(by='monthly_score', ascending=True)
+        
+        print(f"\n{month}:")
+        print("  Top 3 Positive:")
+        for i, (_, row) in enumerate(top_positive.iterrows(), 1):
+            emp_name = row['employee_id'].split('@')[0]
+            print(f"    {i}. {emp_name}: {int(row['monthly_score'])} points")
+            rankings.append({
+                'month': month,
+                'rank_type': 'Top Positive',
+                'rank_position': i,
+                'employee_id': row['employee_id'],
+                'score': row['monthly_score']
+            })
+        
+        print("  Top 3 Negative:")
+        for i, (_, row) in enumerate(top_negative.iterrows(), 1):
+            emp_name = row['employee_id'].split('@')[0]
+            print(f"    {i}. {emp_name}: {int(row['monthly_score'])} points")
+            rankings.append({
+                'month': month,
+                'rank_type': 'Top Negative',
+                'rank_position': i,
+                'employee_id': row['employee_id'],
+                'score': row['monthly_score']
+            })
+    
+    rankings_df = pd.DataFrame(rankings)
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.axis('off')
+    
+    table_data = []
+    for month in months:
+        month_ranks = rankings_df[rankings_df['month'] == month]
+        pos_ranks = month_ranks[month_ranks['rank_type'] == 'Top Positive']
+        neg_ranks = month_ranks[month_ranks['rank_type'] == 'Top Negative']
+        
+        row = [month]
+        pos_str = '\n'.join([f"{r['employee_id'].split('@')[0]}: {int(r['score'])}" 
+                            for _, r in pos_ranks.iterrows()])
+        row.append(pos_str)
+        neg_str = '\n'.join([f"{r['employee_id'].split('@')[0]}: {int(r['score'])}" 
+                            for _, r in neg_ranks.iterrows()])
+        row.append(neg_str)
+        table_data.append(row)
+    
+    table = ax.table(
+        cellText=table_data,
+        colLabels=['Month', 'Top 3 Positive', 'Top 3 Negative'],
+        cellLoc='center',
+        loc='center',
+        colWidths=[0.15, 0.4, 0.4]
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.2, 1.8)
+    
+    plt.title('Employee Rankings by Month', fontsize=14, fontweight='bold', pad=20)
+    plt.tight_layout()
+    plt.savefig('visualizations/employee_rankings_table.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print("\n  ✓ Saved: visualizations/employee_rankings_table.png")
+    
+    return rankings_df
+
+# =============================
+# TASK 5: FLIGHT RISK IDENTIFICATION
+# =============================
+
+def identify_flight_risks(df):
+    """Task 5: Flight Risk Identification"""
+    print("\n" + "=" * 60)
+    print("TASK 5: FLIGHT RISK IDENTIFICATION")
+    print("=" * 60)
+    
+    print("\nCriteria:")
+    print("  - Flight risk = 4 or more negative messages")
+    print("  - Within a 30-day rolling window (irrespective of month)")
+    
+    negative_df = df[df['sentiment'] == 'Negative'].copy()
+    negative_df = negative_df.sort_values(['employee_id', 'parsed_date'])
+    
+    print(f"\n  Total negative messages: {len(negative_df)}")
+    print(f"  Unique employees with negative messages: {negative_df['employee_id'].nunique()}")
+    
+    flight_risks = set()
+    
+    for employee_id in negative_df['employee_id'].unique():
+        emp_negative = negative_df[negative_df['employee_id'] == employee_id].copy()
+        emp_negative = emp_negative.sort_values('parsed_date')
+        
+        if len(emp_negative) < 4:
+            continue
+        
+        dates = emp_negative['parsed_date'].tolist()
+        
+        for i, start_date in enumerate(dates):
+            end_date = start_date + timedelta(days=30)
+            count = sum(1 for d in dates if start_date <= d <= end_date)
+            
+            if count >= 4:
+                flight_risks.add(employee_id)
+                break
+    
+    flight_risk_list = sorted(list(flight_risks))
+    
+    print(f"\n✓ Flight Risk Analysis Complete")
+    print(f"  Employees identified as flight risks: {len(flight_risk_list)}")
+    
+    if flight_risk_list:
+        print(f"\n--- Flight Risk Employee List ---")
+        for emp in flight_risk_list[:20]:
+            emp_name = emp.split('@')[0]
+            neg_count = len(negative_df[negative_df['employee_id'] == emp])
+            print(f"  - {emp_name}: {neg_count} negative messages")
+        
+        if len(flight_risk_list) > 20:
+            print(f"  ... and {len(flight_risk_list) - 20} more")
+    
+    flight_risk_df = pd.DataFrame({
+        'employee_id': flight_risk_list,
+        'employee_name': [e.split('@')[0] for e in flight_risk_list],
+        'negative_message_count': [len(negative_df[negative_df['employee_id'] == e]) for e in flight_risk_list]
+    })
+    flight_risk_df.to_csv('visualizations/flight_risk_employees.csv', index=False)
+    print(f"\n  ✓ Saved: visualizations/flight_risk_employees.csv")
+    
+    return flight_risk_list
+
+# =============================
+# TASK 6: PREDICTIVE MODELING
+# =============================
+
+def build_predictive_model(df):
+    """Task 6: Predictive Modeling"""
+    print("\n" + "=" * 60)
+    print("TASK 6: PREDICTIVE MODELING")
+    print("=" * 60)
+    
+    print("\nFeatures selected for prediction:")
+    print("  - message_length: Length of the message in characters")
+    print("  - word_count: Number of words in the message")
+    print("  - month_msg_count: Number of messages the employee sent that month")
+    print("  - employee_avg_length: Employee's average message length historically")
+    
+    monthly_msg_count = df.groupby(['employee_id', 'month']).size().reset_index(name='month_msg_count')
+    df = df.merge(monthly_msg_count, on=['employee_id', 'month'], how='left')
+    
+    emp_avg_length = df.groupby('employee_id')['message_length'].mean().reset_index(name='employee_avg_length')
+    df = df.merge(emp_avg_length, on='employee_id', how='left')
+    
+    feature_cols = ['message_length', 'word_count', 'month_msg_count', 'employee_avg_length']
+    
+    model_df = df[feature_cols + ['sentiment_score']].dropna()
+    
+    X = model_df[feature_cols]
+    y = model_df['sentiment_score']
+    
+    print(f"\n  Dataset size for modeling: {len(X)} samples")
+    print(f"  Features: {feature_cols}")
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    
+    print(f"  Training samples: {len(X_train)}")
+    print(f"  Testing samples: {len(X_test)}")
+    
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    model = LinearRegression()
+    model.fit(X_train_scaled, y_train)
+    
+    y_train_pred = model.predict(X_train_scaled)
+    y_test_pred = model.predict(X_test_scaled)
+    
+    train_r2 = r2_score(y_train, y_train_pred)
+    test_r2 = r2_score(y_test, y_test_pred)
+    train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
+    test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
+    train_mae = mean_absolute_error(y_train, y_train_pred)
+    test_mae = mean_absolute_error(y_test, y_test_pred)
+    
+    print(f"\n✓ Linear Regression Model Trained")
+    print(f"\n--- Model Performance ---")
+    print(f"  Training Set:")
+    print(f"    - R² Score: {train_r2:.4f}")
+    print(f"    - RMSE: {train_rmse:.4f}")
+    print(f"    - MAE: {train_mae:.4f}")
+    print(f"\n  Test Set:")
+    print(f"    - R² Score: {test_r2:.4f}")
+    print(f"    - RMSE: {test_rmse:.4f}")
+    print(f"    - MAE: {test_mae:.4f}")
+    
+    print(f"\n--- Feature Coefficients ---")
+    for feat, coef in zip(feature_cols, model.coef_):
+        print(f"  {feat}: {coef:.4f}")
+    print(f"  Intercept: {model.intercept_:.4f}")
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    axes[0].scatter(y_test, y_test_pred, alpha=0.5, color='steelblue')
+    axes[0].plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 
+                'r--', linewidth=2, label='Perfect Prediction')
+    axes[0].set_xlabel('Actual Sentiment Score')
+    axes[0].set_ylabel('Predicted Sentiment Score')
+    axes[0].set_title(f'Actual vs Predicted (Test R² = {test_r2:.3f})')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    
+    importance_df = pd.DataFrame({
+        'Feature': feature_cols,
+        'Coefficient': model.coef_
+    }).sort_values('Coefficient', key=abs, ascending=True)
+    
+    colors = ['#F44336' if c < 0 else '#4CAF50' for c in importance_df['Coefficient']]
+    axes[1].barh(importance_df['Feature'], importance_df['Coefficient'], color=colors)
+    axes[1].set_xlabel('Coefficient Value')
+    axes[1].set_title('Feature Importance (Linear Regression Coefficients)')
+    axes[1].axvline(x=0, color='black', linestyle='-', linewidth=0.5)
+    axes[1].grid(True, alpha=0.3, axis='x')
+    
+    plt.tight_layout()
+    plt.savefig('visualizations/model_performance.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"\n  ✓ Saved: visualizations/model_performance.png")
+    
+    return {
+        'train_r2': train_r2,
+        'test_r2': test_r2,
+        'train_rmse': train_rmse,
+        'test_rmse': test_rmse,
+        'train_mae': train_mae,
+        'test_mae': test_mae,
+        'coefficients': dict(zip(feature_cols, model.coef_)),
+        'intercept': model.intercept_
+    }
+
+# =============================
+# MAIN EXECUTION
 # =============================
 
 def main():
     """Main analysis pipeline"""
-    print("🚀 Starting Employee Sentiment Analysis...")
-
-    # Load and preprocess data
-    df = pd.read_csv('employee_reviews.csv', encoding='unicode_escape')
-    print(f"Dataset loaded with {df.shape[0]} rows and {df.shape[1]} columns")
-
-    # Basic cleaning
-    df['curr/ex-flg'] = df['job-title'].str.split('-', expand=True)[0]
-    df['job-title'] = df['job-title'].str.split('-', n=1).str[1]
-    df['dates'] = df['dates'].str.strip()
-    df['dates'] = pd.to_datetime(df['dates'], errors='coerce')
-    df['dates'] = df['dates'].dt.strftime('%Y-%m')
-    df.dropna(how='all', inplace=True)
-    df.drop(index=54743, errors='ignore', inplace=True)
-
-    # Process text and filter English
-    df['pros&cons'] = df['pros&cons'].apply(remove_special_char)
-    df['is_english'] = df['pros&cons'].apply(is_english)
-    df_english = df[df['is_english'] == True].copy()
-
-    # Basic sentiment analysis
-    df_english['sentiment'] = df_english['pros&cons'].apply(sentiment_label)
-
-    # Create employee IDs and additional features
-    df_english = create_employee_id(df_english)
-    df_english['message_length'] = df_english['pros&cons'].str.len()
-    df_english['word_count'] = df_english['pros&cons'].str.split().str.len()
-
-    print(f"Processed {len(df_english)} English reviews")
-
+    print("\n" + "=" * 60)
+    print("STARTING EMPLOYEE SENTIMENT ANALYSIS")
+    print("=" * 60)
+    
+    # Task 1: Load and preprocess data
+    df = load_and_preprocess_data('test.xlsx')
+    
+    # Task 1: Sentiment Labeling
+    df = perform_sentiment_labeling(df)
+    
+    # Task 2: EDA
+    df = perform_eda(df)
+    
+    # Task 3: Employee Score Calculation
+    monthly_scores = calculate_employee_scores(df)
+    
+    # Task 4: Employee Ranking
+    rankings_df = rank_employees(monthly_scores)
+    
+    # Task 5: Flight Risk Identification
+    flight_risks = identify_flight_risks(df)
+    
+    # Task 6: Predictive Modeling
+    model_metrics = build_predictive_model(df)
+    
     # =============================
-    # BASIC ANALYSIS
+    # SAVE RESULTS
     # =============================
-
-    print("\n📊 Performing Basic Analysis...")
-
-    # Task 1: Create sentiment distribution pie chart
-    print("\n=== Task 1: Sentiment Distribution Visualization ===")
-    create_sentiment_distribution_pie(df_english)
-    print("Sentiment distribution pie chart created and displayed")
-
-    # Task 2: Create sentiment trends over time
-    print("\n=== Task 2: Exploratory Data Analysis ===")
-    create_sentiment_trends(df_english)
-    print("Dataset structure:")
-    print(f"Total reviews: {len(df_english)}")
-    # Get date range safely
-    valid_dates = pd.to_datetime(df_english['dates'], errors='coerce').dropna()
-    if len(valid_dates) > 0:
-        print(f"Date range: {valid_dates.min().strftime('%Y-%m')} to {valid_dates.max().strftime('%Y-%m')}")
-    else:
-        print("Date range: Unable to determine")
-    print("Sentiment trends chart created and displayed")
-
-    # Task 3: Create word clouds
-    print("\n=== Task 3: Employee Score Calculation ===")
-    create_word_clouds(df_english)
-    print("Sentiment word clouds created and displayed")
-
-    # Task 4: Employee scoring
-    sentiment_scores = {'Positive': 1, 'Negative': -1, 'Neutral': 0}
-    df_english['sentiment_score'] = df_english['sentiment'].map(sentiment_scores)
-    monthly_scores = df_english.groupby(['employee_id', 'dates'])['sentiment_score'].sum().reset_index()
-    monthly_scores.columns = ['employee_id', 'month', 'monthly_score']
-    print(f"Monthly scores calculated for {monthly_scores['employee_id'].nunique()} unique employees")
-    print("\nSample monthly scores:")
-    print(monthly_scores.head(10).to_string())
-
-    # Task 5: Employee rankings
-    print("\n=== Task 4: Employee Ranking ===")
-    create_employee_rankings_table(monthly_scores)
-    print("Employee Rankings by Month:")
-    recent_months = sorted(monthly_scores['month'].unique())[-6:]
-    top_positive = []
-    top_negative = []
-
-    for month in recent_months:
-        month_data = monthly_scores[monthly_scores['month'] == month]
-        top_pos = month_data.nlargest(3, 'monthly_score')[['employee_id', 'monthly_score']]
-        top_neg = month_data.nsmallest(3, 'monthly_score')[['employee_id', 'monthly_score']]
-        top_positive.append(top_pos.assign(month=month))
-        top_negative.append(top_neg.assign(month=month))
-
-    top_positive_df = pd.concat(top_positive)
-    top_negative_df = pd.concat(top_negative)
-
-    for month in recent_months:
-        print(f"\n{month}:")
-        pos_data = top_positive_df[top_positive_df['month'] == month]
-        neg_data = top_negative_df[top_negative_df['month'] == month]
-
-        print("Top 3 Positive:")
-        for i in range(min(3, len(pos_data))):
-            print(f"  {pos_data.iloc[i]['employee_id']}: {int(pos_data.iloc[i]['monthly_score'])}")
-
-        print("Top 3 Negative:")
-        for i in range(min(3, len(neg_data))):
-            print(f"  {neg_data.iloc[i]['employee_id']}: {int(neg_data.iloc[i]['monthly_score'])}")
-
-    # Task 6: Flight risk analysis
-    print("\n=== Task 5: Flight Risk Identification ===")
-    monthly_negative = df_english[df_english['sentiment'] == 'Negative'].groupby(['employee_id', 'dates']).size().reset_index(name='negative_count')
-    monthly_negative['negative_count_30d'] = monthly_negative.groupby('employee_id')['negative_count'].rolling(window=1, min_periods=1).sum().reset_index(0, drop=True)
-    flight_risks = monthly_negative[monthly_negative['negative_count_30d'] >= 4]['employee_id'].unique()
-    print(f"Flight Risk Employees: {len(flight_risks)}")
-    print("\nFlight risk employee IDs:")
-    for i, emp_id in enumerate(flight_risks[:10]):
-        print(f"  {emp_id}")
-    if len(flight_risks) > 10:
-        print(f"  ... and {len(flight_risks) - 10} more")
-
-    # =============================
-    # ADVANCED ANALYSIS (DISABLED FOR SPEED)
-    # =============================
-
-    advanced_results = {}
-
-    # Skip advanced analysis to speed up execution
-    # if ADVANCED_COMPONENTS_AVAILABLE:
-    #     print("\n🤖 Performing Advanced Analysis...")
-    #
-    #     # Skip advanced sentiment analysis to speed up execution
-    #     # sample_df = df_english.sample(n=min(1000, len(df_english)), random_state=42)
-    #     # sample_df['advanced_sentiment'] = sample_df['pros&cons'].apply(advanced_sentiment_analysis)
-    #     # agreement = (sample_df['sentiment'] == sample_df['advanced_sentiment']).mean()
-    #     # print(f"VADER vs RoBERTa agreement: {agreement:.2%}")
-    #
-    #     # Topic modeling
-    #     # topic_results = perform_topic_modeling(df_english, max_samples=1000)
-    #     # if topic_results:
-    #     #     print(f"Found {len(topic_results['topic_info'])} topics")
-    #
-    #     # Churn prediction
-    #     # churn_labels = create_churn_labels(df_english)
-    #     # features_df = engineer_features(df_english)
-    #     # churn_model_results = train_churn_model(features_df, churn_labels)
-    #
-    #     # print(f"Churn model AUC: {churn_model_results['auc_score']:.3f}")
-    #     # Anomaly detection
-    #     # daily_sentiment = detect_sentiment_anomalies(df_english)
-    #     # ml_anomalies, _, _ = ml_anomaly_detection(daily_sentiment)
-    #
-    #     # anomaly_count = daily_sentiment['is_anomaly'].sum()
-    #     # ml_anomaly_count = ml_anomalies['is_ml_anomaly'].sum()
-    #
-    #     # print(f"Found {anomaly_count} statistical anomalies and {ml_anomaly_count} ML anomalies")
-    #
-    #     # advanced_results = {
-    #     #     # 'sentiment_agreement': agreement,
-    #     #     'topics_found': len(topic_results['topic_info']) if topic_results else 0,
-    #     #     'churn_model_auc': churn_model_results['auc_score'],
-    #     #     'statistical_anomalies': int(anomaly_count),
-    #     #     'ml_anomalies': int(ml_anomaly_count)
-    #     # }
-
-    # Save results
+    
+    print("\n" + "=" * 60)
+    print("SAVING RESULTS")
+    print("=" * 60)
+    
+    df.to_csv('processed_employee_data.csv', index=False)
+    print("\n✓ Saved: processed_employee_data.csv")
+    
+    monthly_scores.to_csv('monthly_employee_scores.csv', index=False)
+    print("✓ Saved: monthly_employee_scores.csv")
+    
+    rankings_df.to_csv('employee_rankings.csv', index=False)
+    print("✓ Saved: employee_rankings.csv")
+    
+    results = {
+        'analysis_summary': {
+            'total_messages': len(df),
+            'unique_employees': df['employee_id'].nunique(),
+            'date_range': f"{df['month'].min()} to {df['month'].max()}",
+            'unique_months': df['month'].nunique()
+        },
+        'sentiment_distribution': df['sentiment'].value_counts().to_dict(),
+        'flight_risks_count': len(flight_risks),
+        'flight_risk_employees': list(flight_risks),
+        'model_performance': model_metrics
+    }
+    
     with open('analysis_results.json', 'w') as f:
-        json.dump({
-            'basic_stats': {
-                'total_reviews': len(df_english),
-                'sentiment_distribution': df_english['sentiment'].value_counts().to_dict(),
-                'unique_employees': monthly_scores['employee_id'].nunique(),
-                'flight_risks': len(flight_risks)
-            },
-            'advanced_results': advanced_results
-        }, f, indent=2)
-
-    print("\n✅ Analysis Complete!")
-    print("📁 Generated visualizations in 'visualizations/' folder")
-    print("📄 Results saved to 'analysis_results.json'")
-
-    return df_english, monthly_scores, flight_risks
+        json.dump(results, f, indent=2, default=str)
+    print("✓ Saved: analysis_results.json")
+    
+    print("\n" + "=" * 60)
+    print("ANALYSIS COMPLETE!")
+    print("=" * 60)
+    print(f"\n📊 Total messages analyzed: {len(df)}")
+    print(f"👥 Unique employees: {df['employee_id'].nunique()}")
+    print(f"⚠️ Flight risk employees identified: {len(flight_risks)}")
+    print(f"📁 All outputs saved in 'visualizations/' folder")
+    
+    return df, monthly_scores, rankings_df, flight_risks
 
 if __name__ == "__main__":
-    # Run main analysis
-    df_processed, monthly_scores, flight_risks = main()
-
+    df_processed, monthly_scores, rankings, flight_risks = main()
     print("\n🎉 Employee Sentiment Analysis completed successfully!")
-    print(f"📊 Processed {len(df_processed)} reviews")
-    print(f"👥 Analyzed {monthly_scores['employee_id'].nunique()} employees")
-    print(f"⚠️ Identified {len(flight_risks)} flight risk employees")
+ 
